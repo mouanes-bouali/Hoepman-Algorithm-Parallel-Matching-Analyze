@@ -1,4 +1,4 @@
-
+#pragma once
 #include <vector>
 using Vertice=int ;
 struct Edge {
