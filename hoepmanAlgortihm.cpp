@@ -8,8 +8,13 @@
 #include <algorithm>
 #include <utility>
 #include <vector>
+#include <chrono>
+#include "analyzeStats.hpp"
 class hoepmanAlgorithm {
 public:
+
+// each algorithm object holds one graph and experement on it, so both algorithm in an object returns the results of 2 version applied on 1 graph
+// to use another graph, needs to create a new object
   hoepmanAlgorithm(Graph graph) : _graph(graph) {
     _parallelGraph=graph;
     candidates.resize(graph.vertices.size(), -1);
@@ -72,9 +77,91 @@ public:
 
     return outGraph;
   }
+
+
+
+// same sequential algortihm but it return the algorithm result duration and memory and rounds
+
+AlgorithmResult StartAnalysingSequentialAlgorithm() {
+  AlgorithmResult result;
+    bool matchingFound = true;
+    auto startTime = std::chrono::high_resolution_clock::now();
+  
+    // we loop over the vertices to find matches, if we found we loop again,
+    // otherwise we stop.
+    while (matchingFound) {
+      matchingFound = false; // so we check if a matching found in a loop
+      for (Vertice u : _graph.vertices) {
+        if (matches[u] == -1) {
+
+          // vertice v = find highest weight edge in adj
+          // send a request to v by u
+
+          candidates[u] = getBestMatch(u);
+        }
+      }
+
+      // we loop again so we check if 2 edges requested each others, which means
+      // they match
+      for (Vertice u : _graph.vertices) {
+        if (matches[u] != 1 && candidates[u] != -1) {
+          Vertice v = candidates[u];
+          if (candidates[v] == u) {
+            matches[u] = 1;
+            matches[v] = 1;
+            matchingFound = true;
+          }
+        }
+      }
+      result.rounds++;
+    }
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = endTime - startTime;
+    result.executionTimeMs=duration.count();
+    //calculate memory usage
+
+    Graph outGraph = _graph;
+    outGraph.edges.clear();
+
+    for (Vertice u : _graph.vertices) {
+      if (matches[u] == 1 && u < candidates[u]) {
+        for (const auto &neighbor : _adjacencyList[u]) {
+          if (neighbor.first == candidates[u]) {
+            outGraph.edges.push_back({u, candidates[u], neighbor.second});
+            break;
+          }
+        }
+      }
+    }
+    long long memoryUsed=calculateMemorySizeUsedBySequential();
+    return result ;
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
  Graph StartParallelAlgorithm(int numberOfThreads) {
     bool matchingFound = true;
-
+    auto startTime = std::chrono::high_resolution_clock::now();
     // we loop over the vertices to find matches, if we found we loop again,
     // otherwise we stop.
     while (matchingFound) {
@@ -98,7 +185,7 @@ public:
           Vertice v = _parallelCandidates[u];
           if (_parallelCandidates[v] == u) {
             _parallelMatches[u] = 1;
-          
+          _parallelMatches[v] = 1;
             matchingFound = true;
           }
         }
@@ -120,6 +207,74 @@ public:
 
     return outGraph;
   }
+
+// same algorithm of parallel, but it returns the algorithm results of duration adn memory used and rounds
+AlgorithmResult  StartAnalysingParallelAlgorithm(int numberOfThreads, int numberOfChunks) {
+    AlgorithmResult result;
+  auto startTime = std::chrono::high_resolution_clock::now();
+    bool matchingFound = true;
+
+    // we loop over the vertices to find matches, if we found we loop again,
+    // otherwise we stop.
+    while (matchingFound) {
+      matchingFound = false; // so we check if a matching found in a loop
+      #pragma omp parallel for num_threads(numberOfThreads) schedule(dynamic, numberOfChunks)
+      for (Vertice u : _parallelGraph.vertices) {
+        if (_parallelMatches[u] == -1) {
+
+          // vertice v = find highest weight edge in adj
+          // send a request to v by u
+
+          _parallelCandidates[u] = getParallelBestMatch(u);
+        }
+      }
+
+      // we loop again so we check if 2 edges requested each others, which means
+      // they match
+      #pragma omp parallel for num_threads(numberOfThreads) schedule(dynamic, 256) reduction(||:matchingFound)
+      for (Vertice u : _parallelGraph.vertices) {
+        if (_parallelMatches[u] != 1 && _parallelCandidates[u] != -1) {
+          Vertice v = _parallelCandidates[u];
+          if (_parallelCandidates[v] == u) {
+            _parallelMatches[u] = 1;
+          _parallelMatches[v] = 1;
+            matchingFound = true;
+          }
+        }
+      }
+    }
+     auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> duration = endTime - startTime;
+    result.executionTimeMs=duration.count();
+    //calculate memory usage
+
+    Graph outGraph = _graph;
+    outGraph.edges.clear();
+
+    for (Vertice u : _parallelGraph.vertices) {
+      if (_parallelMatches[u] == 1 && u < _parallelCandidates[u]) {
+        for (const auto &neighbor : _parallelAdjacencyList[u]) {
+          if (neighbor.first == _parallelCandidates[u]) {
+            outGraph.edges.push_back({u, _parallelCandidates[u], neighbor.second});
+            break;
+          }
+        }
+      }
+    }
+     long long memoryUsed=calculateMemorySizeUsedBySequential();
+    return result;
+  }
+
+
+
+
+
+
+
+
+
+
+
 private:
   Graph _graph;
   Graph _parallelGraph;
@@ -203,5 +358,35 @@ private:
     } else {
       return -1;
     }
+  }
+
+  long long calculateMemorySizeUsedBySequential(){
+    long long memory=0;
+    int n= _graph.vertices.size();
+         memory += candidates.capacity() * sizeof(Vertice);
+        memory += matches.capacity() * sizeof(Vertice);
+        memory += currentHighestAdjacency.capacity() * sizeof(int);
+        
+        
+        for (int i = 0; i < n; i++) {
+            
+            memory += _adjacencyList[i].capacity() * sizeof(std::pair<Vertice, int>);
+        }
+        return memory;
+  }
+
+   long long calculateMemorySizeUsedByParallel(){
+    long long memory=0;
+    int n= _graph.vertices.size();
+         memory += _parallelCandidates.capacity() * sizeof(Vertice);
+        memory += _parallelMatches.capacity() * sizeof(Vertice);
+        memory += currentHighestParallelAdjacency.capacity() * sizeof(int);
+        
+        
+        for (int i = 0; i < n; i++) {
+            
+            memory += _parallelAdjacencyList[i].capacity() * sizeof(std::pair<Vertice, int>);
+        }
+        return memory;
   }
 };
